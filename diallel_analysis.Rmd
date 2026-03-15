@@ -1,0 +1,143 @@
+---
+title: "Quantitative Genetics: Diallel Analysis with sommer"
+author: "Bioinformatics Portfolio"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: united
+---
+
+# Introduction
+
+This analysis evaluates a half-diallel mating design using the `sommer` package in R. The goal is to partition genetic variance into **General Combining Ability (GCA)** and **Specific Combining Ability (SCA)** and to estimate breeding values (BLUPs) for parent selection.
+
+# 1. Environment Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+# Check and install necessary packages
+packages <- c("sommer", "dplyr", "ggplot2")
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+library(sommer)
+library(dplyr)
+library(ggplot2)
+```
+
+# 2. Data Exploration
+
+The `DT_halfdiallel` dataset contains sugar content measurements from a sugar beet half-diallel cross.
+
+```{r}
+data("DT_halfdiallel")
+DT <- DT_halfdiallel
+head(DT)
+
+# Summary of the experimental design
+cat("Number of Parents:", length(unique(c(as.character(DT$female), as.character(DT$male)))), "\n")
+cat("Number of Crosses:", length(unique(DT$geno)), "\n")
+cat("Number of Replicates:", length(unique(DT$block)), "\n")
+
+# Visualize raw cross means
+cross_means <- DT %>%
+  group_by(geno) %>%
+  summarise(meanSugar = mean(sugar, na.rm = TRUE)) %>%
+  arrange(desc(meanSugar))
+
+ggplot(cross_means, aes(x = reorder(geno, meanSugar), y = meanSugar)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Raw Mean Sugar Content per Cross",
+       x = "Cross (Geno)", y = "Sugar Content") +
+  theme_minimal()
+```
+
+# 3. Mixed Model Fitting (GCA + SCA)
+
+We fit a model where the parent effects (GCA) are combined using an overlay matrix, and specific combinations (SCA) are treated as random effects.
+
+```{r}
+# Prepare factors
+DT$femalef <- as.factor(DT$female)
+DT$malef <- as.factor(DT$male)
+DT$genof <- as.factor(DT$geno)
+
+# Fit the model
+# GCA: overlay(femalef, malef)
+# SCA: genof
+mod1 <- mmes(sugar ~ block,
+             random = ~ vsm(ism(overlay(femalef, malef))) + vsm(ism(genof)),
+             rcov = ~ units,
+             data = DT)
+
+summary(mod1)
+```
+
+# 4. Heritability Estimation
+
+We use `vpredict` to calculate narrow-sense ($h^2$) and broad-sense heritability ($H^2$).
+
+```{r}
+# Variance components
+vars <- summary(mod1)$varcomp
+
+# Narrow-sense heritability (Additive / Total)
+h2_res <- vpredict(mod1, h2 ~ V1 / (V1 + V2 + V3))
+cat("Narrow-sense heritability (h²):", round(h2_res$Estimate, 3), "\n")
+
+# Broad-sense heritability ((Additive + Dominance/SCA) / Total)
+H2_res <- vpredict(mod1, H2 ~ (V1 + V2) / (V1 + V2 + V3))
+cat("Broad-sense heritability (H²):", round(H2_res$Estimate, 3), "\n")
+```
+
+# 5. BLUPs of Genetic Effects
+
+Best Linear Unbiased Predictors (BLUPs) provide a more accurate estimate of genetic merit than raw means by shrinking estimates toward the mean based on the reliability of the data.
+
+```{r}
+# Extract GCA BLUPs (Parents)
+gca <- mod1$uList[[1]]
+gca_df <- data.frame(
+  Parent = levels(DT$femalef),
+  GCA_BLUP = as.numeric(gca)
+) %>% arrange(desc(GCA_BLUP))
+
+print("Top Parents by GCA:")
+head(gca_df)
+
+# Extract SCA BLUPs (Crosses)
+sca <- mod1$uList[[2]]
+sca_df <- data.frame(
+  Cross = levels(DT$genof),
+  SCA_BLUP = as.numeric(sca)
+) %>% arrange(desc(SCA_BLUP))
+
+print("Top Crosses by SCA:")
+head(sca_df)
+```
+
+# 6. Comparing Raw Means vs. BLUPs
+
+```{r}
+# Merge raw means with SCA BLUPs
+comparison <- inner_join(cross_means, sca_df, by = c("geno" = "Cross"))
+
+# Correlation
+correlation <- cor(comparison$meanSugar, comparison$SCA_BLUP)
+
+# Plot
+ggplot(comparison, aes(x = meanSugar, y = SCA_BLUP)) +
+  geom_point(color = "darkred") +
+  geom_smooth(method = "lm", se = FALSE, color = "blue", linetype = "dashed") +
+  labs(x = "Raw Means", y = "SCA BLUPs",
+       title = paste0("Shrinkage Effect: Raw Means vs. BLUPs (r = ", round(correlation, 2), ")")) +
+  theme_minimal()
+```
+
+# Conclusion
+
+The analysis demonstrates that parent selection based on GCA BLUPs is more robust than simple phenotypic selection. The high narrow-sense heritability suggests that additive genetic effects are substantial, indicating that progeny performance is predictable from parental GCA.

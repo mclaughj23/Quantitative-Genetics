@@ -1,0 +1,14 @@
+# R related
+.Rhistory
+.RData
+.Rproj.user
+*.html
+
+# Data files (optional: if you want to keep data out of Git)
+# *.csv
+# *.txt
+# *.hmp.txt
+
+# OS related
+.DS_Store
+Thumbs.db

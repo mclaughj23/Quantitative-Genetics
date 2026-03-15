@@ -1,0 +1,124 @@
+---
+title: "Quantitative Genetics: BLUP Estimation in Unbalanced Breeding Data"
+author: "Bioinformatics Portfolio"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: cosmo
+---
+
+# Introduction
+
+This analysis evaluates Double Haploid (DH) barley breeding lines across an unbalanced experimental design. We use mixed linear models to estimate **Best Linear Unbiased Predictors (BLUPs)** for yield, which accounts for the shrinkage effect and handles missing data more effectively than raw means.
+
+# 1. Environment Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+# Check and install necessary packages
+packages <- c("lme4", "dplyr", "ggplot2", "tidyr")
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+library(lme4)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+# 2. Data Exploration
+
+```{r}
+# Load the barley dataset
+# Note: Using relative path for reproducibility
+df <- read.table("data/barley_progeny.txt", header = TRUE)
+
+# Convert to factors
+df$block <- as.factor(df$block)
+df$line <- as.factor(df$line)
+
+str(df)
+summary(df)
+
+# Check for imbalance (number of lines per block)
+table(df$block)
+
+# Distribution of yield
+ggplot(df, aes(x = yield_g_m2)) +
+  geom_histogram(bins = 20, fill = "seagreen", color = "white") +
+  labs(title = "Distribution of Barley Yield", x = "Yield (g/m2)", y = "Frequency") +
+  theme_minimal()
+```
+
+# 3. Mixed Model Fitting
+
+We fit a model with:
+- **Fixed Effects:** Block (to account for spatial variation).
+- **Random Effects:** Line (to estimate genetic merit and variance).
+
+```{r}
+# Fit mixed model using lmer
+model <- lmer(yield_g_m2 ~ block + (1|line), data = df)
+
+summary(model)
+```
+
+# 4. Heritability Estimation
+
+Broad-sense heritability ($H^2$) is calculated as:
+$$H^2 = \frac{V_G}{V_G + \frac{V_E}{r}}$$
+where $r$ is the number of replicates (harmonics mean if unbalanced).
+
+```{r}
+# Extract variance components
+var_comp <- as.data.frame(VarCorr(model))
+vg <- var_comp[var_comp$grp == "line", "vcov"]
+ve <- var_comp[var_comp$grp == "Residual", "vcov"]
+
+# Harmonic mean of replicates
+reps <- df %>% group_by(line) %>% summarise(n = n())
+r_harmonic <- 1 / mean(1 / reps$n)
+
+# Broad-sense heritability
+H2 <- vg / (vg + (ve / r_harmonic))
+cat("Broad-sense heritability (H²):", round(H2, 3), "\n")
+```
+
+# 5. Extracting BLUPs
+
+BLUPs provide the "Shrunken" estimates of the genetic merit of each line.
+
+```{r}
+# Extract random effects (BLUPs)
+blups <- ranef(model)$line
+blups_df <- data.frame(
+  Line = rownames(blups),
+  BLUP = blups$`(Intercept)`
+) %>% arrange(desc(BLUP))
+
+print("Top 10 Barley Lines by BLUP:")
+head(blups_df, 10)
+
+# Compare BLUPs with raw means
+raw_means <- df %>%
+  group_by(line) %>%
+  summarise(Raw_Mean = mean(yield_g_m2))
+
+comparison <- inner_join(raw_means, blups_df, by = c("line" = "Line"))
+
+# Visualize Shrinkage
+ggplot(comparison, aes(x = Raw_Mean, y = BLUP)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(title = "Shrinkage Effect: Raw Means vs. BLUPs",
+       subtitle = "BLUPs are pulled toward the population mean",
+       x = "Raw Phenotypic Mean", y = "Estimated Breeding Value (BLUP)") +
+  theme_minimal()
+```
+
+# Conclusion
+
+The analysis successfully estimated the breeding values for the barley lines while accounting for block effects. The shrinkage observed in the BLUPs (where lines with extreme means but low replication are pulled closer to the average) demonstrates the robustness of mixed models in breeding selection compared to simple selection on raw means.
